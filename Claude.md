@@ -87,7 +87,8 @@ All integration logic. Do not modify `rosame.py`, `rosame_runner.py`, or `libs/m
 
 **Key implementation details:**
 - `MARosame.fit(trajectory_paths, problem_paths)` takes **paired lists** — each trajectory has its own problem file (different object counts per problem instance)
-- Phase 2 uses **joint training**: all trajectories are merged into one dataset and trained with a single optimizer pass. Objects from all problems are unioned so the proposition space is shared. This is done via `_union_objects()` + `rosame.ground_from_dict(union_objects)` before training, then re-grounding per-problem for scoring.
+- Phase 2 uses **per-trajectory training with shared weights**: each trajectory is trained individually against its own problem's (small) proposition space. Model weights persist across calls — trajectory N+1 starts from weights learned on trajectories 1…N. This converges much faster than the previous joint-union approach.
+- **Critical**: the scoring loop uses `rosame_runner.problem = problem` + `rosame_runner.ground_new_trajectory()` (NOT `add_problem()`) to re-ground without reinitialising model weights. Calling `add_problem()` would create a brand new model with random weights, discarding everything learned in Phase 2.
 - `_to_single_agent_observation()` extracts pseudo-single-agent steps from joint actions by picking the first non-NOP action per step (`_NOP_NAMES = {"nop", "dummy-add-predicate-action", "dummy-del-predicate-action"}`)
 - Scoring re-grounds per-problem so proposition indices align with each trajectory's actual objects
 - `ma_sam_path.py` must use `sys.path.append` (not `insert(0,...)`) — inserting at the front causes `libs/ma-sam/statistics/` to shadow stdlib `statistics`, breaking PyTorch
@@ -110,10 +111,17 @@ Set `NOISE_RATE = 0.10` to enable. At `NOISE_RATE = 0.0` the temp-file dance is 
 
 The union proposition space (all objects from all 20 problems) is large. After 100 epochs the model loss is still ~124–149 (barely moving), so clean-step MSE scores sit in the 0.05–0.15 range. **Do not use threshold < 0.1 until epochs are increased significantly (500+).**
 
-### Other files
+### Other files / directory layout
 
-- `cv_gridworld.py` — legacy CNN utility, unused by the main pipeline
-- `pyrightconfig.json` — tells Pylance to resolve `sam_learning` from `libs/ma-sam` (suppresses false import warnings; has no effect on runtime)
+| Path | Purpose |
+|------|---------|
+| `docs/mid_report.md` | Academic mid-progress report |
+| `output/` | Generated PDDL files written by run scripts (`learned_blocks_domain_*.pddl`) |
+| `legacy/cv_gridworld.py` | Legacy CNN utility — unused by the main pipeline |
+| `problems/` | PDDL domain + problem files used by `demo.py` |
+| `libs/ma-sam/` | `ma-sam` git submodule |
+
+> **Note:** All run scripts write their output PDDL files to `output/` and create the directory if it doesn't exist.
 
 ### Submodule patches (`libs/ma-sam`)
 
@@ -210,16 +218,13 @@ Use `0.1` as the default. Do not go below `0.1` unless epochs are 500+. See empi
 
 ### ❌ Not Working / Known Limitations
 
-- **ROSAME does not converge on the union proposition space in 100 epochs.** Loss barely moves (149 → 144). The union of all 20 problem object sets creates a very large proposition space that the model hasn't learned to predict accurately. Clean-step MSE scores sit at 0.05–0.15, which overlaps with noisy-step scores — making threshold selection unreliable.
-- **Threshold tuning is broken under noise + joint training.** `threshold=0.05` discards ~90% of steps including clean ones. `threshold=0.1` lets some noisy steps through. There is no safe threshold until the model converges.
-- **Learned domain under noise is incomplete.** At 10% noise, MA-ROSAME recovers at most one effect per action (e.g. `unstack` recovers `(not (on ?y ?x))`). The clean domain has 5 effects for `unstack`. MA-SAM+ baseline on noisy data recovers zero effects for most actions.
 - **No macro actions discovered.** `macro_mapping` is always empty on the blocks dataset. This is a MA-SAM+ behaviour, not a MA-ROSAME bug.
+- **Learned domain under high noise may still be incomplete.** Depends on how many noisy steps pass through the filter; see threshold guidance above.
 
-### 🔧 Next steps to fix convergence
+### 🔧 If convergence is still poor
 
-1. **More epochs** — 500+ needed for the union proposition space. Currently blocked by runtime (~3 min per 100 epochs on CPU).
-2. **Per-problem grounding during training** — instead of one giant union space, train each trajectory separately but share the optimizer state across calls (requires refactoring `learn_rosame` to accept an external optimizer).
-3. **Learning rate tuning** — the Adam optimizer uses `lr=1e-3` hardcoded in `rosame_runner.py`. A higher rate (e.g. `5e-3`) might accelerate convergence on the larger space.
+1. **More epochs** — increase `EPOCHS` in `run_ma_rosame.py`. With per-trajectory training, 100 epochs per trajectory (×20 trajectories = 2000 total training calls) should converge well on clean data.
+2. **Learning rate tuning** — the Adam optimizer uses `lr=1e-3` hardcoded in `rosame_runner.py`. A higher rate (e.g. `5e-3`) would require editing that file.
 
 ---
 

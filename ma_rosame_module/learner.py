@@ -13,15 +13,18 @@ from ma_rosame_module.adapter import to_multi_agent_observation
 _NOP_NAMES = {"nop", "dummy-add-predicate-action", "dummy-del-predicate-action"}
 
 
-def _to_single_agent_observation(ma_obs) -> Observation:
+def _to_single_agent_observation(ma_obs, kept_indices=None) -> Observation:
     """Extract a pseudo-single-agent Observation from a MultiAgentObservation.
 
     Per step: pick the first operational action whose name is not a NOP.
-    Used only for ROSAME training — ROSAME expects single-action steps.
+    If kept_indices is given, only include those step positions.
     """
+    include = set(kept_indices) if kept_indices is not None else None
     sa_obs = Observation()
     sa_obs.add_problem_objects(ma_obs.grounded_objects)
-    for component in ma_obs.components:
+    for i, component in enumerate(ma_obs.components):
+        if include is not None and i not in include:
+            continue
         for action in component.grounded_joint_action.operational_actions:
             if action.name.lower() not in _NOP_NAMES:
                 sa_obs.add_component(
@@ -31,15 +34,6 @@ def _to_single_agent_observation(ma_obs) -> Observation:
                 )
                 break
     return sa_obs
-
-
-def _union_objects(problems) -> dict:
-    """Merge objects from all problems into one type→[names] dict (deduped)."""
-    merged = defaultdict(set)
-    for problem in problems:
-        for name, obj in problem.objects.items():
-            merged[obj.type.name].add(name)
-    return {t: sorted(names) for t, names in merged.items()}
 
 
 class MARosame:
@@ -68,44 +62,62 @@ class MARosame:
             )
             pairs.append((traj_path, problem, ma_obs))
 
-        # Phase 2 — joint ROSAME training across all trajectories
+        # Phase 2 — two-pass ROSAME training
         #
-        # Ground the model once to the union of all objects so every trajectory
-        # is encoded against the same proposition space. This lets us concatenate
-        # all steps into one dataset and train with a single optimizer pass,
-        # rather than independently fitting each trajectory in sequence.
+        # Pass 1 (half epochs, all steps): Bootstrap the model on all data so it
+        # learns the dominant clean dynamics. At 10% noise the clean signal is 9×
+        # stronger, so the model learns mostly clean transitions.
+        #
+        # Intermediate scoring: use the pass-1 model to identify which steps are
+        # "likely noisy" (high MSE). These are excluded from pass 2.
+        #
+        # Pass 2 (half epochs, clean steps only): Retrain on the filtered data.
+        # Now the model has no noisy signal to fit, so clean-step MSE drops and
+        # noisy-step MSE (when scored after) will be distinctly higher.
+
         rosame_runner = Rosame_Runner(self.domain_path)
-        problems = [problem for _, problem, _ in pairs]
-        union_objects = _union_objects(problems)
+        rosame_runner.add_problem(pairs[0][1])  # one-time model initialisation
 
-        # add_problem needs a problem object for the rosame init path;
-        # use the first one, then immediately re-ground to the union
-        rosame_runner.add_problem(problems[0])
-        rosame_runner.rosame.ground_from_dict(union_objects)
-        rosame_runner.objects = union_objects
+        pass1_epochs = max(1, self.epochs // 2)
+        pass2_epochs = self.epochs - pass1_epochs
 
-        # Collect pseudo-single-agent steps from all trajectories into one observation
-        combined_sa_obs = Observation()
-        combined_sa_obs.add_problem_objects(
-            {name: obj for problem in problems for name, obj in problem.objects.items()}
-        )
-        for _, _, ma_obs in pairs:
+        print(f"Pass 1: {pass1_epochs} epochs on all steps")
+        for i, (_, problem, ma_obs) in enumerate(pairs):
+            rosame_runner.problem = problem
+            rosame_runner.ground_new_trajectory()
             sa_obs = _to_single_agent_observation(ma_obs)
-            for component in sa_obs.components:
-                combined_sa_obs.components.append(component)
+            print(f"  [{i + 1}/{len(pairs)}] {len(sa_obs.components)} steps ({problem.name})")
+            rosame_runner.learn_rosame(sa_obs, epochs=pass1_epochs)
 
-        print(f"Joint training on {len(combined_sa_obs.components)} steps from {len(pairs)} trajectories")
-        rosame_runner.learn_rosame(combined_sa_obs, epochs=self.epochs)
+        # Intermediate scoring — collect clean indices per trajectory
+        print("Intermediate scoring (pass-1 model)…")
+        clean_indices_per_pair = []
+        for _, problem, ma_obs in pairs:
+            rosame_runner.problem = problem
+            rosame_runner.ground_new_trajectory()
+            _, clean_indices = filter_observation(rosame_runner, ma_obs, self.noise_threshold)
+            clean_indices_per_pair.append(clean_indices)
+            dropped = len(ma_obs.components) - len(clean_indices)
+            print(f"  {dropped:3d} steps flagged as noisy out of {len(ma_obs.components)}")
 
-        # Phases 3–5 — score, filter, and rebuild each trajectory
-        # Re-ground per-problem for scoring so propositions align with the
-        # actual objects present in each trajectory's states.
+        print(f"Pass 2: {pass2_epochs} epochs on clean steps only")
+        for i, ((_, problem, ma_obs), clean_indices) in enumerate(zip(pairs, clean_indices_per_pair)):
+            rosame_runner.problem = problem
+            rosame_runner.ground_new_trajectory()
+            sa_obs_clean = _to_single_agent_observation(ma_obs, kept_indices=clean_indices)
+            print(f"  [{i + 1}/{len(pairs)}] {len(sa_obs_clean.components)}/{len(ma_obs.components)} clean steps")
+            rosame_runner.learn_rosame(sa_obs_clean, epochs=pass2_epochs)
+
+        # Phases 3–5 — final scoring, filter, and rebuild each trajectory
+        # Use rosame_runner.problem + ground_new_trajectory() (NOT add_problem())
+        # to preserve the weights learned in both training passes.
+        print("Final scoring (pass-2 model)…")
         cleaned_observations = []
         for traj_path, problem, ma_obs in pairs:
-            rosame_runner.add_problem(problem)
+            rosame_runner.problem = problem
             rosame_runner.ground_new_trajectory()
             _, kept_indices = filter_observation(rosame_runner, ma_obs, self.noise_threshold)
-            print(f"{traj_path.name}: {len(kept_indices)}/{len(ma_obs.components)} steps kept")
+            print(f"  {traj_path.name}: {len(kept_indices)}/{len(ma_obs.components)} steps kept")
             ma_obs_clean = to_multi_agent_observation(
                 self.domain, problem, traj_path, self.agents, kept_indices
             )

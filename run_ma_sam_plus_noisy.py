@@ -77,7 +77,8 @@ with tempfile.TemporaryDirectory() as tmp_dir:
         learner.learn_combined_action_model_with_macro_actions(observations)
     )
 
-output_path = Path("learned_blocks_domain_noisy_baseline.pddl")
+output_path = Path("output/learned_blocks_domain_noisy_baseline.pddl")
+output_path.parent.mkdir(exist_ok=True)
 output_path.write_text(learned_domain.to_pddl())
 
 print(f"Safe actions:  {sorted(report.keys())}")

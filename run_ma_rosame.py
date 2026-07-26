@@ -8,8 +8,8 @@ from ma_rosame_module.learner import MARosame
 DATA = Path(__file__).parent / "libs/ma-sam/experiments_dataset/blocks"
 AGENTS = ["a1", "a2", "a3", "a4"]
 NOISE_THRESHOLD = 0.1
-NOISE_RATE = 0.0    # set to 0.10 to simulate noise
-EPOCHS = 100
+NOISE_RATE = 0.01
+EPOCHS = 300
 RANDOM_SEED = 42
 
 
@@ -100,7 +100,8 @@ else:
         problem_paths=problem_paths,
     )
 
-output_path = Path("learned_blocks_domain_ma_rosame.pddl")
+output_path = Path("output/learned_blocks_domain_ma_rosame.pddl")
+output_path.parent.mkdir(exist_ok=True)
 ma_rosame.export(learned_domain, output_path)
 
 print(f"Safe actions:    {sorted(report.keys())}")
