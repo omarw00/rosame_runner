@@ -1,5 +1,4 @@
 import ma_sam_path  # noqa: F401 – adds libs/ma-sam to sys.path
-from collections import defaultdict
 from pathlib import Path
 
 from pddl_plus_parser.lisp_parsers import DomainParser, ProblemParser, TrajectoryParser
@@ -37,7 +36,13 @@ def _to_single_agent_observation(ma_obs, kept_indices=None) -> Observation:
 
 
 class MARosame:
-    def __init__(self, domain_path, agents: list[str], noise_threshold: float = 0.1, epochs: int = 100):
+    def __init__(
+        self,
+        domain_path,
+        agents: list[str],
+        noise_threshold: float = 0.1,
+        epochs: int = 100,
+    ):
         self.domain_path = Path(domain_path)
         self.agents = agents
         self.noise_threshold = noise_threshold
@@ -47,8 +52,10 @@ class MARosame:
     def fit(self, trajectory_paths: list[Path], problem_paths: list[Path]):
         """Run the full MA-ROSAME pipeline.
 
-        Each trajectory_path must have a corresponding problem_path at the same index.
         Returns (learned_domain, report, macro_mapping).
+          learned_domain : LearnerDomain from MA-SAM+
+          report         : MA-SAM+ safe-action report
+          macro_mapping  : MA-SAM+ macro-action mapping
         """
         trajectory_paths = [Path(p) for p in trajectory_paths]
         problem_paths = [Path(p) for p in problem_paths]
@@ -63,20 +70,8 @@ class MARosame:
             pairs.append((traj_path, problem, ma_obs))
 
         # Phase 2 — two-pass ROSAME training
-        #
-        # Pass 1 (half epochs, all steps): Bootstrap the model on all data so it
-        # learns the dominant clean dynamics. At 10% noise the clean signal is 9×
-        # stronger, so the model learns mostly clean transitions.
-        #
-        # Intermediate scoring: use the pass-1 model to identify which steps are
-        # "likely noisy" (high MSE). These are excluded from pass 2.
-        #
-        # Pass 2 (half epochs, clean steps only): Retrain on the filtered data.
-        # Now the model has no noisy signal to fit, so clean-step MSE drops and
-        # noisy-step MSE (when scored after) will be distinctly higher.
-
         rosame_runner = Rosame_Runner(self.domain_path)
-        rosame_runner.add_problem(pairs[0][1])  # one-time model initialisation
+        rosame_runner.add_problem(pairs[0][1])
 
         pass1_epochs = max(1, self.epochs // 2)
         pass2_epochs = self.epochs - pass1_epochs
@@ -86,10 +81,9 @@ class MARosame:
             rosame_runner.problem = problem
             rosame_runner.ground_new_trajectory()
             sa_obs = _to_single_agent_observation(ma_obs)
-            print(f"  [{i + 1}/{len(pairs)}] {len(sa_obs.components)} steps ({problem.name})")
+            print(f"  [{i + 1}/{len(pairs)}] {len(sa_obs.components)} steps")
             rosame_runner.learn_rosame(sa_obs, epochs=pass1_epochs)
 
-        # Intermediate scoring — collect clean indices per trajectory
         print("Intermediate scoring (pass-1 model)…")
         clean_indices_per_pair = []
         for _, problem, ma_obs in pairs:
@@ -108,9 +102,7 @@ class MARosame:
             print(f"  [{i + 1}/{len(pairs)}] {len(sa_obs_clean.components)}/{len(ma_obs.components)} clean steps")
             rosame_runner.learn_rosame(sa_obs_clean, epochs=pass2_epochs)
 
-        # Phases 3–5 — final scoring, filter, and rebuild each trajectory
-        # Use rosame_runner.problem + ground_new_trajectory() (NOT add_problem())
-        # to preserve the weights learned in both training passes.
+        # Phases 3–5 — final scoring, filter, rebuild
         print("Final scoring (pass-2 model)…")
         cleaned_observations = []
         for traj_path, problem, ma_obs in pairs:
@@ -123,13 +115,21 @@ class MARosame:
             )
             cleaned_observations.append(ma_obs_clean)
 
-        # Phase 6 — symbolic learning with MA-SAM+
-        learner = MASAMPlus(self.domain)
+        # Phase 6 — MA-SAM+ symbolic learning
+        sam_learner = MASAMPlus(self.domain)
         learned_domain, report, macro_mapping = (
-            learner.learn_combined_action_model_with_macro_actions(cleaned_observations)
+            sam_learner.learn_combined_action_model_with_macro_actions(cleaned_observations)
         )
+
+        print("\nPer-action model summary:")
+        print(f"  {'Action':<35} {'Pre':>3}  {'Eff':>3}")
+        print(f"  {'-'*35}  {'-'*3}  {'-'*3}")
+        for aname, action in sorted(learned_domain.actions.items()):
+            print(f"  {aname:<35} {len(action.preconditions_str_set):>3}  "
+                  f"{len(action.discrete_effects):>3}")
+
         return learned_domain, report, macro_mapping
 
     def export(self, learned_domain, path: Path):
-        """Write learned_domain to a PDDL file."""
+        """Write the learned domain PDDL to a file."""
         Path(path).write_text(learned_domain.to_pddl())
