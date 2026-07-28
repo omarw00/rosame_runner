@@ -6,6 +6,62 @@
 by [Kaiyu Xi](https://users.cecs.anu.edu.au/~u7176586/), [Stephen Gould](https://users.cecs.anu.edu.au/~sgould/), and [Sylvie Thiébaux](https://users.cecs.anu.edu.au/~thiebaux/)  
 🔗 [**Read the paper**](https://users.cecs.anu.edu.au/~thiebaux/papers/icaps24-rosame.pdf)
 
+## 🚀 Getting Started
+
+### Prerequisites
+- Python 3.10+ (tested on Python 3.14)
+
+### Installation
+
+```bash
+# Clone the repository
+git clone <repo-url>
+cd rosame_runner
+
+# Create a virtual environment
+python -m venv .venv
+
+# Activate it
+# Windows (PowerShell)
+.venv\Scripts\Activate.ps1
+# Linux / macOS
+source .venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### Running the demo
+
+A minimal example is included in `demo.py`. It learns an action model from the trajectory under `problems/`:
+
+```bash
+python demo.py
+```
+
+### Configuration
+
+`demo.py` reads paths from environment variables (all optional):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ROSAME_DATA_DIR` | `./problems` | Folder containing domain, problem, and trajectory files |
+| `ROSAME_DOMAIN_FILE` | `blocksworld.pddl` | Domain file name (inside `ROSAME_DATA_DIR`) |
+| `ROSAME_PROBLEM_FILE` | `0_blocksworld_prob.pddl` | Problem file name (inside `ROSAME_DATA_DIR`) |
+
+Example:
+
+```bash
+# PowerShell
+$env:ROSAME_DATA_DIR = "C:\path\to\my\dataset"
+python demo.py
+
+# bash / zsh
+ROSAME_DATA_DIR=/path/to/my/dataset python demo.py
+```
+
+Trajectory files are auto-discovered via the glob `*_traj.txt` inside `ROSAME_DATA_DIR`.
+
 ## 🔍 Overview
 The original ROSAME framework combines:
 

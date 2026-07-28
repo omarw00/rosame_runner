@@ -9,7 +9,7 @@ from pddl_plus_parser.models import Domain, Observation, State, ActionCall, PDDL
 
 from pddl_plus_parser.lisp_parsers import ProblemParser, TrajectoryParser, DomainParser
 
-from rosame_models.rosame import Action_Schema,Domain_Model,Predicate,Type
+from rosame import Action_Schema,Domain_Model,Predicate,Type
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -83,7 +83,7 @@ class Rosame_Runner:
 
     def _get_types_count(self,container):
         """
-        A map that countes for each predicate/action what are the types used and how many of them
+        A map that counts for each predicate/action what are the types used and how many of them
         """
         params = defaultdict(int)
         for _, types in container.signature.items():
